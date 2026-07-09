@@ -4,23 +4,16 @@
 \usepackage[T1]{fontenc}
 \usepackage[margin=1in]{geometry}
 \usepackage{booktabs}
-\usepackage{listings}
+\usepackage{longtable}
 \usepackage{xcolor}
 \usepackage{hyperref}
 \usepackage{enumitem}
+\usepackage{array}
+\usepackage{parskip}
 
 \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
 
-\lstset{
-  basicstyle=\ttfamily\small,
-  breaklines=true,
-  frame=single,
-  backgroundcolor=\color{gray!8},
-  columns=fullflexible,
-  keepspaces=true,
-}
-
-\title{Retrieval and Classification of the Literature on the\\
+\title{Retrieval and Classification of the Scientific Literature on the\\
 Capacitated Arc Routing Problem: A Reproducible Pipeline}
 \author{CARP review project}
 \date{\today}
@@ -29,204 +22,551 @@ Capacitated Arc Routing Problem: A Reproducible Pipeline}
 \maketitle
 
 \begin{abstract}
-This document describes the process used to build a corpus of scientific
-publications on the Capacitated Arc Routing Problem (CARP), its variants, and its
-solution methodology. Rather than scraping publisher websites directly---which is
-unreliable, rate-limited, and violates most terms of service---the pipeline queries
-the free, open bibliographic aggregator OpenAlex, which already indexes the major
-scientific publishers (Elsevier/ScienceDirect, IEEE~Xplore, Springer, Wiley, Taylor
-\& Francis, among others). For each work only metadata are retrieved (no PDFs are
-downloaded): DOI, title, abstract, publication year, venue, publisher, and
-open-access status. The corpus is then classified twice---first with a transparent
-rule-based tagger and second with a large language model (LLM) that assigns a single
-primary variant and solution method per article---and finally summarized through a
-set of figures and a cross-tabulation.
+This document describes the methodology used to systematically collect, classify, and
+analyse the body of scientific publications on the Capacitated Arc Routing Problem
+(CARP), its structural variants, and its solution methodology. The pipeline has three
+main stages: (1) automated metadata retrieval from the OpenAlex bibliographic
+aggregator, (2) rule-based classification of each article's CARP variant and solution
+approach through a structured keyword taxonomy, and (3) semantic classification with a
+large language model (LLM) that assigns a single primary label per article and
+summarises how the problem was solved. The resulting corpus covers 905 unique works
+(1981--2026); a focused subset of 206 works published from 2021 onward is used for
+the main analysis.
 \end{abstract}
 
+\tableofcontents
+\newpage
+
+% ------------------------------------------------------------------ %
 \section{Overview}
-The pipeline has four stages, each implemented as a small, self-contained Python
-script:
+% ------------------------------------------------------------------ %
+
+The pipeline has four sequential stages:
+
 \begin{enumerate}[nosep]
-  \item \textbf{Collection} --- query OpenAlex and store metadata
-        (\texttt{carp\_scraper.py}).
-  \item \textbf{Rule-based classification} --- keyword taxonomies over
-        title\,+\,abstract (\texttt{classifier.py}, \texttt{enrich.py}).
-  \item \textbf{LLM classification} --- semantic labelling of each abstract
-        (\texttt{llm\_classifier.py} or the local
-        \texttt{llm\_local\_prep.py}\,/\,\texttt{llm\_local\_merge.py}).
-  \item \textbf{Analysis} --- figures and cross-tabulations
-        (\texttt{analysis.py}).
+  \item \textbf{Collection.} The OpenAlex REST API is queried with a set of carefully
+        chosen search phrases that cover the CARP, its major structural variants, and
+        its principal solution methodologies. For each retrieved work only metadata are
+        stored---no full texts or PDFs are downloaded.
+  \item \textbf{Rule-based classification.} A deterministic keyword classifier
+        analyses the concatenated title and abstract of each article to assign variant
+        labels and a solution-approach category. The classifier applies structured
+        regular-expression taxonomies and is fully transparent and reproducible.
+  \item \textbf{LLM semantic classification.} A large language model re-reads each
+        abstract and assigns a single primary variant and a single primary solution
+        method, together with a relevance judgement and a one-sentence description of
+        how the problem was solved.
+  \item \textbf{Analysis.} The LLM-classified corpus is summarised through a set of
+        figures (publication trends, variant and method distributions, open-access
+        share) and a variant-by-approach cross-tabulation.
 \end{enumerate}
-All outputs are written to a \texttt{data/} directory in both CSV and JSON.
 
+All intermediate and final outputs are stored in both CSV and JSON formats to
+facilitate re-use and manual inspection.
+
+% ------------------------------------------------------------------ %
 \section{Data source and rationale}
-The core design decision was to \emph{not} scrape publisher sites. Direct scraping
-of ScienceDirect, IEEE~Xplore, Springer, and similar platforms is brittle (anti-bot
-protections, CAPTCHAs, pay-walls) and legally questionable. Instead we use
-\textbf{OpenAlex}\footnote{\url{https://openalex.org}}, a free and open catalogue of
-over 250 million scholarly works that aggregates records from essentially all major
-publishers. OpenAlex exposes a public REST API that requires no API key; supplying a
-contact e-mail places requests in the faster ``polite pool''.
+% ------------------------------------------------------------------ %
 
+A central design decision of the pipeline is to \emph{not} scrape publisher websites
+directly. Direct scraping of platforms such as Elsevier ScienceDirect, IEEE~Xplore,
+Springer Link, or Wiley Online Library is technically brittle (anti-bot protections,
+CAPTCHAs, dynamic JavaScript rendering, IP-based rate limits) and legally
+questionable, as most platforms explicitly prohibit automated access in their terms of
+service.
+
+Instead, the pipeline uses \textbf{OpenAlex}
+(\url{https://openalex.org}), a free and openly licensed catalogue of more than 250
+million scholarly works. OpenAlex aggregates records from Crossref, PubMed, DOAJ,
+Unpaywall, and all major publishers, and exposes a public REST API that requires no
+registration or API key. Supplying a contact e-mail address in the request headers
+places the client in the faster ``polite pool'', which receives priority and more
+stable rate limits. The API returns structured JSON with rich metadata including DOI,
+title, venue, open-access status, and---crucially for text-based
+classification---abstracts encoded as inverted indices.
+
+\subsection{Abstract encoding and reconstruction}
+
+OpenAlex distributes abstracts in an \emph{inverted-index} format for licensing
+reasons: rather than providing the plain text, it provides a mapping from each
+distinct word to the list of character positions at which that word appears in the
+original text. To reconstruct the readable abstract, the pipeline collects all
+(position, word) pairs from the inverted index, sorts them in ascending order of
+position, and concatenates the words separated by single spaces. This procedure is
+lossless for the vocabulary and word order; only whitespace formatting details (e.g.\
+multiple spaces or line breaks within the original text) may differ from the source.
+
+When OpenAlex does not hold an abstract for a given work---which occurs for a
+substantial fraction of conference papers, theses, and older journal articles---the
+abstract field is left empty and the record is flagged as lacking abstract coverage.
+Such records still contribute to the metadata corpus and are included in all
+year-based counts, but they are excluded from the text-based classification steps
+(rule-based and LLM), which require readable text to operate.
+
+% ------------------------------------------------------------------ %
 \section{Search strategy}
-Because CARP variants almost always contain the phrase \emph{arc routing}, a small
-set of anchor phrases yields broad coverage. Each phrase is issued as an exact
-phrase match against the combined title-and-abstract field
-(\texttt{filter=title\_and\_abstract.search:"\ldots"}). The phrase list spans the
-core problem, its variants, and its methodology:
+% ------------------------------------------------------------------ %
 
-\begin{lstlisting}
-capacitated arc routing problem      periodic capacitated arc routing
-capacitated arc routing              stochastic arc routing
-arc routing problem                  mixed capacitated arc routing
-multi-depot arc routing              multi-objective arc routing
-split delivery arc routing           time-dependent arc routing
-min-max capacitated arc routing      large-scale capacitated arc routing
-windy arc routing                    open capacitated arc routing
-arc routing metaheuristic            arc routing heuristic
-arc routing genetic algorithm        arc routing memetic algorithm
-arc routing ant colony               arc routing tabu search
-arc routing exact algorithm          arc routing branch and cut
-\end{lstlisting}
+The search is structured around 22 exact-phrase queries issued against the combined
+title-and-abstract field of OpenAlex. An exact-phrase query requires the words to
+appear in the specified order and adjacently (or with standard stop-word gaps) in the
+indexed text, yielding high precision. The phrase list is organised in three groups:
 
-\noindent
-Results from all phrases are merged and \textbf{de-duplicated by the OpenAlex work
-identifier}. In practice the two broad anchors (\emph{arc routing problem} and
-\emph{capacitated arc routing}) already subsume the narrower variant phrases, which
-therefore contribute few or no additional records.
-
-\subsection{Pagination}
-Full result sets are retrieved with OpenAlex cursor pagination
-(\texttt{per-page=200}, \texttt{cursor=*}, following \texttt{meta.next\_cursor}
-until exhausted), with a short courtesy delay between requests.
-
-\section{Retrieved fields}
-For every unique work the following fields are flattened out of the OpenAlex JSON:
-
-\begin{center}
-\begin{tabular}{@{}ll@{}}
-\toprule
-\textbf{Field} & \textbf{Source in the OpenAlex record} \\
-\midrule
-\texttt{doi}              & \texttt{doi} (normalised, prefix stripped) \\
-\texttt{title}            & \texttt{title} / \texttt{display\_name} \\
-\texttt{abstract}         & reconstructed from \texttt{abstract\_inverted\_index} \\
-\texttt{publication\_year} & \texttt{publication\_year} \\
-\texttt{venue}            & \texttt{primary\_location.source.display\_name} \\
-\texttt{publisher}        & \texttt{primary\_location.source.host\_organization\_name} \\
-\texttt{is\_open\_access}  & \texttt{open\_access.is\_oa} \\
-\texttt{oa\_status}       & \texttt{open\_access.oa\_status} \\
-\texttt{work\_type}, \texttt{cited\_by\_count}, \texttt{openalex\_id} & respective fields \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-\paragraph{Abstract reconstruction.}
-OpenAlex distributes abstracts as an \emph{inverted index} (a mapping from each word
-to the list of positions at which it occurs) for licensing reasons. The plain-text
-abstract is rebuilt by collecting all \((\text{position}, \text{word})\) pairs,
-sorting them by position, and concatenating the words.
-
-\section{Collection results}
-The unfiltered query returned \textbf{905 unique works} spanning 1969--2026. Of
-these, 79\% carry a DOI, 60\% include a usable abstract, and 35\% are open access.
-The most frequent venues were \emph{Computers \& Operations Research}, the
-\emph{European Journal of Operational Research}, and \emph{Networks}. Missing
-abstracts and DOIs reflect coverage gaps in the source (e.g.\ some theses and
-conference records), not failures of the retrieval procedure.
-
-\subsection{Restriction to recent literature (2021 onward)}
-The unfiltered query returns works dated as early as 1969, which is spurious given
-that the CARP was formally introduced in 1981; such early dates correspond to
-mis-dated records or arc-routing predecessors in the source data. For the focused
-analysis we therefore restrict the corpus to works published from \textbf{2021
-onward}. Filtering the already-collected data (no re-querying and no
-re-classification) yields \textbf{206 works} (44 in 2021, 55 in 2022, 30 in 2023, 26
-in 2024, 31 in 2025, 20 in 2026), of which \textbf{135 carry a usable abstract} and
-are covered by the LLM classification; 113 of the 206 are open access. This subset,
-its LLM labels, figures, and cross-tabulation are written with a \texttt{2021on\_}
-prefix by \texttt{filter\_2021on.py}, which reuses the previously generated files.
-
-\section{Classification}
-\subsection{Rule-based tagger}
-A transparent, reproducible classifier (\texttt{classifier.py}) applies regular-%
-expression taxonomies to the concatenated title and abstract. It emits, per
-article: the CARP \emph{variant(s)}; a high-level \emph{solution approach} (exact /
-constructive heuristic / metaheuristic / hybrid--matheuristic); the specific
-metaheuristics detected (GA, memetic, ACO, tabu search, VNS, ALNS, \ldots); and a
-Boolean \emph{hybrid} flag. Because it matches every keyword present, it may
-over-label survey-style abstracts that enumerate many methods; it is therefore
-treated as a fast first pass rather than the final label.
-
-\subsection{LLM classification}
-For higher precision, each abstract is classified with a large language model
-(Anthropic Claude). Unlike the rule-based tagger, the LLM assigns \emph{one} primary
-variant and \emph{one} primary solution method per article, and additionally
-produces a relevance judgement and a one-sentence summary of \emph{how} the problem
-was solved. The output schema is:
-
-\begin{center}
-\begin{tabular}{@{}ll@{}}
-\toprule
-\textbf{Field} & \textbf{Meaning} \\
-\midrule
-\texttt{llm\_relevance}      & core CARP / CARP variant / related arc routing / not relevant \\
-\texttt{llm\_variant}        & single CARP variant (closed vocabulary) \\
-\texttt{llm\_approach}       & exact / heuristic / metaheuristic / hybrid / ML / survey \\
-\texttt{llm\_metaheuristics} & specific metaheuristics named in the text \\
-\texttt{llm\_is\_hybrid}      & Boolean \\
-\texttt{llm\_how\_solved}     & one-sentence summary of the solution method \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-Two interchangeable routes produce the same schema:
+\paragraph{Core CARP.} Three broad phrases anchor the search on the problem and its
+most common abbreviated forms:
 \begin{itemize}[nosep]
-  \item \textbf{Batch API} (\texttt{llm\_classifier.py}): the 552 abstracts are
-        submitted through Anthropic's Batch API with \emph{structured outputs}
-        (a JSON schema) so that every response is guaranteed to be valid and
-        parseable. This route is fully automated and low cost.
-  \item \textbf{Local route} (\texttt{llm\_local\_prep.py} +
-        \texttt{llm\_local\_merge.py}): abstracts are exported to a compact JSONL
-        file, classified in batches, stored under \texttt{data/llm\_results/}, and
-        merged back into the corpus by index.
+  \item ``capacitated arc routing problem''
+  \item ``capacitated arc routing''
+  \item ``arc routing problem''
 \end{itemize}
 
-Only records with a usable abstract (552 of the 905) are sent to the LLM, since the
-model requires text to reason over. The resulting label distribution shows that the
-number of ``unspecified'' methods drops sharply relative to the rule-based pass,
-because the model infers the method even when the exact keyword is absent.
+\paragraph{Structural variants.} Eleven phrases targeting named variants that may not
+always be indexed under the full CARP name:
+\begin{itemize}[nosep]
+  \item ``periodic capacitated arc routing''
+  \item ``stochastic arc routing''
+  \item ``mixed capacitated arc routing''
+  \item ``multi-depot arc routing''
+  \item ``multi-objective arc routing''
+  \item ``split delivery arc routing''
+  \item ``time-dependent arc routing''
+  \item ``min-max capacitated arc routing''
+  \item ``large-scale capacitated arc routing''
+  \item ``windy arc routing''
+  \item ``open capacitated arc routing''
+\end{itemize}
 
+\paragraph{Methodology phrases.} Eight phrases that combine the arc-routing context
+with a specific algorithmic family, ensuring that methodological papers written with
+an algorithmic focus rather than a problem-definition focus are also retrieved:
+\begin{itemize}[nosep]
+  \item ``arc routing metaheuristic''
+  \item ``arc routing heuristic''
+  \item ``arc routing genetic algorithm''
+  \item ``arc routing memetic algorithm''
+  \item ``arc routing ant colony''
+  \item ``arc routing tabu search''
+  \item ``arc routing exact algorithm''
+  \item ``arc routing branch and cut''
+\end{itemize}
+
+Results from all 22 queries are pooled and \textbf{de-duplicated by the OpenAlex
+work identifier}, so each article appears at most once regardless of how many phrases
+matched it. In practice the two broadest phrases (\emph{arc routing problem} and
+\emph{capacitated arc routing}) subsume the majority of the records retrieved by
+the narrower variant and methodology phrases, which typically contribute few net-new
+records.
+
+\subsection{Pagination}
+
+OpenAlex paginates results in pages of up to 200 works, using a cursor-based scheme:
+each response contains a \texttt{next\_cursor} token that the following request must
+supply. The pipeline follows this chain until no further cursor is returned, thus
+retrieving the complete result set for each phrase. A short courtesy delay is
+observed between consecutive requests to avoid overloading the API.
+
+% ------------------------------------------------------------------ %
+\section{Retrieved fields}
+% ------------------------------------------------------------------ %
+
+For every unique work the following metadata fields are extracted from the OpenAlex
+JSON response and stored:
+
+\begin{center}
+\begin{tabular}{@{}p{4.2cm}p{9.5cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Description and source within the OpenAlex record} \\
+\midrule
+DOI & Digital Object Identifier (normalised, scheme prefix stripped). \\
+Title & Display name of the work. \\
+Abstract & Plain text reconstructed from the abstract inverted index (see
+           Section~2.1); empty when no abstract is available. \\
+Publication year & Calendar year of publication. \\
+Venue & Name of the journal or conference series where the work appeared. \\
+Publisher & Name of the host organisation (publisher) of the venue. \\
+Open-access status & Boolean flag (\emph{is\_oa}) indicating whether the work is
+                     freely readable. \\
+OA type & Open-access route: gold, green, hybrid, bronze, or closed. \\
+Work type & Record category as assigned by OpenAlex: journal article, conference
+            paper, preprint, book chapter, etc. \\
+Cited-by count & Number of citing works recorded in OpenAlex at retrieval time. \\
+OpenAlex identifier & Persistent internal identifier of the form \texttt{W\ldots},
+                      used for de-duplication. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+% ------------------------------------------------------------------ %
+\section{Collection results}
+% ------------------------------------------------------------------ %
+
+The unfiltered query returned \textbf{905 unique works} spanning from 1969 to 2026.
+The presence of records dated before 1981---the year in which the CARP was formally
+introduced by Golden and Wong---is explained by two factors: (i) a small number of
+mis-dated records in the OpenAlex index, and (ii) works on predecessor problems such
+as the Chinese Postman Problem and the Rural Postman Problem, which share the
+\emph{arc routing} vocabulary. Of the 905 records, approximately 79\% carry a DOI,
+61\% include a usable abstract, and 35\% are open access. The most frequent venues
+are \emph{Computers \& Operations Research}, the \emph{European Journal of
+Operational Research}, and \emph{Networks}. Missing abstracts and DOIs reflect
+coverage gaps in the source data rather than failures of the retrieval procedure.
+
+\subsection{Restriction to recent literature (2021 onward)}
+
+Because the pre-2021 portion of the corpus includes many records without abstracts
+(older journals, conference proceedings) and a non-trivial fraction of spuriously
+dated or only tangentially related records, the main analysis focuses on the
+\textbf{2021--2026 subset}. Filtering is performed on the already-collected data
+without re-querying OpenAlex or re-running any classification. The filtered subset
+contains \textbf{206 works}: 44 in 2021, 55 in 2022, 30 in 2023, 26 in 2024, 31
+in 2025, and 20 in 2026. Of these, 135 carry a usable abstract and are therefore
+covered by the LLM classification; 113 of the 206 are open access.
+
+% ------------------------------------------------------------------ %
+\section{Rule-based classification}
+% ------------------------------------------------------------------ %
+
+The first classification stage uses a deterministic, keyword-driven tagger. For each
+article the title and abstract are concatenated into a single text string, and the
+following four taxonomies are applied through word-boundary regular expressions
+(case-insensitive, except for acronyms written in all-capitals):
+
+\subsection{CARP variant taxonomy}
+
+The tagger recognises 19 structural categories. The category is assigned whenever any
+of the specified keywords or acronyms appears in the text. Multiple categories can be
+assigned simultaneously when an article addresses a combination of variants (e.g.\ a
+multi-depot CARP with time windows). If no variant keyword is detected, the article is
+labelled \emph{Classical CARP / unspecified}.
+
+\begin{longtable}{@{}p{4.5cm}p{9.5cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Trigger keywords / acronyms} \\
+\midrule
+\endhead
+Periodic (PCARP) &
+  ``periodic (capacitated) arc routing''; acronym PCARP. \\
+Stochastic &
+  ``stochastic (capacitated) arc routing''; ``stochastic demand''; acronym SCARP. \\
+Uncertain / Fuzzy / Robust &
+  ``fuzzy''; ``robust''; ``uncertainty''; ``chance-constrain''. \\
+Mixed (MCARP) &
+  ``mixed (capacitated) arc routing''; acronym MCARP. \\
+Multi-depot &
+  ``multi-depot'' (with or without hyphen); ``multiple depots''. \\
+Multi-objective &
+  ``multi-objective''; ``bi-objective''; ``pareto''. \\
+Min-max / Balanced &
+  ``min-max''; any form of ``balanc'' (balance, balanced, balancing). \\
+Split delivery &
+  ``split-delivery''; ``split-demand''. \\
+Time-dependent / Dynamic &
+  ``time-dependent arc routing''; ``dynamic arc routing''; ``online arc routing''. \\
+Time windows (CARPTW) &
+  ``time window''; acronym CARPTW. \\
+Windy (WARP) &
+  ``windy rural postman''; ``windy arc routing''; ``windy postman''; ``windy''. \\
+Open (OCARP) &
+  ``open (capacitated) arc routing''; acronym OCARP. \\
+Prize-collecting / Profitable &
+  ``prize-collecting''; ``profitable''; ``team orienteering arc''. \\
+Large-scale &
+  ``large-scale'' (with or without hyphen). \\
+Intermediate facilities (IF) &
+  ``intermediate facilit''; ``multiple trips''; ``replenish''; acronym IF (not
+  followed by a letter). \\
+Green / Electric &
+  ``green'' (as adjective); ``electric vehicle''; ``emission''; ``CO2'';
+  ``low-carbon''. \\
+Node / General routing (GRP) &
+  ``general routing problem''; ``node, edge'' (combination); acronym GRP. \\
+Rural postman (RPP) &
+  ``rural postman''; acronym RPP. \\
+Chinese postman (CPP) &
+  ``chinese postman''; acronym CPP. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Exact-method taxonomy}
+
+Eight families of exact or mathematical optimisation methods are detected:
+
+\begin{longtable}{@{}p{4.5cm}p{9.5cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Trigger keywords} \\
+\midrule
+\endhead
+Branch-and-cut &
+  ``branch-and-cut''; ``branch-cut''. \\
+Branch-and-price &
+  ``branch-and-price''; ``branch-price''. \\
+Branch-and-bound &
+  ``branch-and-bound''; ``branch-bound''. \\
+Column generation &
+  ``column generation''. \\
+Cutting plane &
+  ``cutting-plane''. \\
+Integer / linear programming &
+  ``integer (linear) program''; ``linear program''; ``mathematical program'';
+  acronyms MILP, MIP, ILP. \\
+Dynamic programming &
+  ``dynamic programming''. \\
+Lagrangian relaxation &
+  ``lagrang'' (matches Lagrangian, Lagrange relaxation, etc.). \\
+\bottomrule
+\end{longtable}
+
+\subsection{Constructive-heuristic taxonomy}
+
+Six families of classical constructive heuristics known from the arc routing
+literature are detected:
+
+\begin{longtable}{@{}p{4.5cm}p{9.5cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Trigger keywords} \\
+\midrule
+\endhead
+Path-scanning &
+  ``path-scanning''. \\
+Augment-merge &
+  ``augment-merge''; ``augment-insert''. \\
+Construct-strike &
+  ``construct-strike''. \\
+Ulusoy split / route-first &
+  ``ulusoy''; ``route-first''; ``split procedure''. \\
+Savings algorithm &
+  ``savings algorithm''; ``savings heuristic''; ``savings-based''. \\
+Greedy / Nearest neighbour &
+  ``greedy''; ``nearest-neighbour''. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Metaheuristic taxonomy}
+
+Seventeen metaheuristic families are detected. Several families are identified by
+both their full name and their widely used acronym:
+
+\begin{longtable}{@{}p{5.2cm}p{8.8cm}@{}}
+\toprule
+\textbf{Category} & \textbf{Trigger keywords / acronyms} \\
+\midrule
+\endhead
+Genetic / Evolutionary algorithm &
+  ``genetic algorithm''; ``evolutionary algorithm''; ``evolutionary computation'';
+  ``genetic programming''; acronym GA. \\
+Memetic algorithm &
+  ``memetic''. \\
+Ant colony optimisation (ACO) &
+  ``ant colony''; ``ant system''; acronym ACO. \\
+Tabu search &
+  ``tabu search''; ``tabu''. \\
+Simulated annealing &
+  ``simulated annealing''. \\
+Variable neighbourhood search (VNS) &
+  ``variable neighbourhood'' (British or American spelling); acronyms VNS, VND. \\
+Particle swarm optimisation (PSO) &
+  ``particle swarm''; acronym PSO. \\
+GRASP &
+  ``greedy randomized adaptive''; acronym GRASP. \\
+Iterated local search (ILS) &
+  ``iterated local search''; acronym ILS. \\
+Guided local search &
+  ``guided local search''. \\
+Scatter search / Path relinking &
+  ``scatter search''; ``path-relinking''. \\
+Estimation of distribution (EDA) &
+  ``estimation of distribution''; acronym EDA. \\
+Artificial bee colony (ABC) &
+  ``artificial bee colony''; ``bee colony''; ``ABC algorithm''. \\
+Differential evolution (DE) &
+  ``differential evolution''. \\
+Large neighbourhood search (LNS/ALNS) &
+  ``large neighbourhood'' (British or American spelling); acronyms ALNS, LNS. \\
+Hyper-heuristic &
+  ``hyper-heuristic''. \\
+Cooperative / Swarm (other) &
+  ``firefly''; ``cuckoo''; ``grey wolf''; ``harmony search''; ``water flow'';
+  ``immune algorithm''; ``bacterial''; acronym ABC (general usage). \\
+\bottomrule
+\end{longtable}
+
+\subsection{Solution-approach assignment and hybrid detection}
+
+Based on the detected method families, each article is assigned a single high-level
+\emph{solution approach} label following a priority hierarchy. An article is first
+tested for the \emph{hybrid} condition; if it is not hybrid, the remaining categories
+are tested from most to least specific:
+
+\begin{enumerate}
+  \item \textbf{Hybrid / Matheuristic.} Assigned when the text contains an explicit
+        hybrid or matheuristic signal (keywords ``hybrid'', ``matheuristic'',
+        ``math-heuristic'', ``cooperative'', or ``memetic''), \emph{or} when the
+        article combines at least one exact method with at least one metaheuristic
+        (a matheuristic configuration), \emph{or} when two or more distinct
+        metaheuristic families are detected simultaneously.
+  \item \textbf{Metaheuristic.} Assigned when at least one metaheuristic family is
+        detected and the hybrid condition is not met.
+  \item \textbf{Constructive heuristic.} Assigned when at least one constructive
+        heuristic family is detected and neither of the above applies.
+  \item \textbf{Exact.} Assigned when at least one exact method is detected and none
+        of the above applies.
+  \item \textbf{Generic heuristic.} Assigned when the text contains generic
+        algorithmic vocabulary---``heuristic'', ``local search'',
+        ``neighbourhood search'', ``metaheuristic''---but no specific family is
+        identified.
+  \item \textbf{Unspecified.} Assigned when no method-related keyword is found (e.g.\
+        purely theoretical papers or those that only have a title available).
+\end{enumerate}
+
+Because the rule-based tagger matches every keyword present in the text, it may
+over-label survey-style abstracts that enumerate multiple methods without proposing
+any of them. It is therefore treated as a fast, transparent first pass that supports
+exploratory analysis but should not be used as the sole source for precision
+classification.
+
+% ------------------------------------------------------------------ %
+\section{LLM semantic classification}
+% ------------------------------------------------------------------ %
+
+To overcome the over-labelling tendency of the rule-based tagger and to incorporate
+deeper semantic understanding, each article with an available abstract is
+re-classified by a large language model (Anthropic Claude). Unlike the rule-based
+pass, the LLM assigns \emph{one} primary variant and \emph{one} primary solution
+approach per article, reflecting the model's judgement about which label best
+describes the central contribution of the paper.
+
+\subsection{Input and scope}
+
+Of the 905 collected works, 552 (61\%) have a usable abstract; only these are
+submitted to the LLM, since the model requires readable text to reason over.
+Articles without an abstract are excluded from LLM classification and are flagged
+accordingly in the output files. The input supplied to the model for each article
+consists of the article's title and up to the first 800~characters of its abstract
+(sufficient to capture the problem statement and method description in most cases).
+
+\subsection{Classification schema}
+
+The LLM is asked to populate a structured output schema with six fields per article:
+
+\begin{center}
+\begin{tabular}{@{}p{4.2cm}p{9.5cm}@{}}
+\toprule
+\textbf{Field} & \textbf{Description and permitted values} \\
+\midrule
+Relevance &
+  One of: \emph{Core CARP} (the paper addresses the standard CARP directly);
+  \emph{CARP variant} (addresses a named extension of the CARP);
+  \emph{Related arc routing} (arc routing problem other than CARP, e.g.\ RPP, CPP,
+  Windy Postman); \emph{Not relevant} (the paper was retrieved by the search phrases
+  but does not substantially address arc routing). \\
+Variant &
+  A single label from a closed vocabulary of CARP variants (e.g.\ Classical CARP,
+  Periodic, Stochastic, Multi-depot, Time windows, Green/Electric, etc.); the label
+  that best describes the paper's primary contribution. \\
+Approach &
+  A single high-level label: \emph{Exact}, \emph{Constructive heuristic},
+  \emph{Metaheuristic}, \emph{Hybrid / Matheuristic}, \emph{Machine learning},
+  or \emph{Survey / Theoretical / Modelling}. \\
+Metaheuristics &
+  A list of the specific metaheuristic families named in the text (e.g.\ [``Genetic
+  algorithm'', ``Variable neighbourhood search'']); empty when the approach is not
+  metaheuristic. \\
+Is hybrid &
+  Boolean: \texttt{true} when the paper combines two or more distinct algorithmic
+  families (exact + metaheuristic, or multiple metaheuristics). \\
+How solved &
+  A single English sentence summarising how the problem was solved, written at an
+  abstract level (e.g.\ ``A genetic algorithm with adaptive large neighbourhood
+  search is combined with an integer programming model for the lower bound''). \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\subsection{Advantages over rule-based classification}
+
+The LLM classification offers several advantages over the keyword tagger:
+
+\begin{itemize}[nosep]
+  \item \textbf{Single primary label.} The LLM assigns only one variant and one
+        approach, which eliminates spurious multi-labelling when a survey abstract
+        cites many methods.
+  \item \textbf{Semantic inference.} The model can infer the method from paraphrases
+        and indirect descriptions that do not contain the exact keywords used in the
+        taxonomy (e.g.\ ``we solve the relaxed formulation and improve with local
+        moves'' is correctly labelled as \emph{Hybrid / Matheuristic}).
+  \item \textbf{Relevance filtering.} The model explicitly identifies records that are
+        not about arc routing, providing a clean relevance filter for all downstream
+        analyses.
+  \item \textbf{How-solved summary.} The one-sentence summary captures the
+        methodological essence of each paper in a form directly usable in a literature
+        review.
+\end{itemize}
+
+% ------------------------------------------------------------------ %
 \section{Analysis}
-The final stage (\texttt{analysis.py}) uses \texttt{pandas} and \texttt{matplotlib}
-to produce, from the LLM-classified corpus (excluding not-relevant records): a
-histogram of publications per year; bar charts of variants, solution approaches, and
-specific metaheuristics; an open-access breakdown; a stacked chart of solution
-approach over time; and a variant\,$\times$\,approach cross-tabulation exported as
-CSV.
+% ------------------------------------------------------------------ %
 
-\section{Reproducibility}
-The entire pipeline is reproducible from a clean checkout:
+The final stage builds on the LLM-classified corpus. Records labelled \emph{Not
+relevant} by the LLM are excluded from all thematic analyses (variant and method
+distributions) but are retained in total-count statistics. The following outputs are
+produced:
 
-\begin{lstlisting}[language=bash]
-pip install -r requirements.txt
+\begin{itemize}[nosep]
+  \item \textbf{Publications per year.} A bar chart of the number of collected works
+        per calendar year, covering the range 1981--2026 for the full corpus and
+        2021--2026 for the focused subset.
+  \item \textbf{CARP variant distribution.} A horizontal bar chart ranking variants by
+        frequency of appearance in the LLM-classified corpus.
+  \item \textbf{Solution approach distribution.} A horizontal bar chart of the
+        six high-level approach categories.
+  \item \textbf{Metaheuristic families.} A horizontal bar chart of the 15 most
+        frequently named specific metaheuristic families.
+  \item \textbf{Open-access share.} A horizontal bar chart comparing the fraction of
+        open-access versus closed-access records in the corpus.
+  \item \textbf{Evolution of approaches over time.} A stacked bar chart showing the
+        yearly composition of solution approaches from 2005 onward, revealing shifts
+        in the field's methodological preferences.
+  \item \textbf{Variant $\times$ approach cross-tabulation.} A matrix counting the
+        co-occurrence of each CARP variant (rows) with each solution approach
+        (columns), exported as a CSV file for further analysis.
+\end{itemize}
 
-# 1. Collect metadata from OpenAlex (writes data/carp_articles.{csv,json})
-python src/main.py
+All figures for the 2021-onward subset are generated independently from those for
+the full corpus and are stored with a \texttt{2021on\_} filename prefix to avoid
+confusion.
 
-# 2. (optional) rule-based classification
-python src/enrich.py
+% ------------------------------------------------------------------ %
+\section{Reproducibility and limitations}
+% ------------------------------------------------------------------ %
 
-# 3. LLM classification (Batch API route; needs ANTHROPIC_API_KEY)
-export ANTHROPIC_API_KEY=sk-ant-...
-python src/llm_classifier.py
+\subsection{Reproducibility}
 
-# 4. figures + cross-tabulation (writes data/figures/ and a CSV)
-python src/analysis.py
-\end{lstlisting}
+The pipeline is fully reproducible from an internet-connected machine: it queries only
+a public API, performs no manual curation steps, and applies deterministic
+transformations at every stage (except the LLM call, which is non-deterministic but
+statistically stable across runs). All intermediate files (JSON, CSV) are version-controlled
+alongside the code, so the analysis figures and cross-tabulations can be regenerated
+at any time without re-querying OpenAlex.
 
-\noindent
-No PDFs are downloaded at any stage; the pipeline operates entirely on metadata and
-abstracts retrieved from the OpenAlex API.
+\subsection{Coverage limitations}
+
+OpenAlex does not index every journal or conference. Coverage is particularly uneven
+for older proceedings, regional journals, and theses. The 39\% of records without an
+abstract most likely reflects this coverage gap rather than the true proportion of
+CARP papers published without abstracts.
+
+\subsection{Rule-based classifier limitations}
+
+The rule-based classifier operates solely on surface-form text. It will miss relevant
+papers that use non-standard terminology and will over-label survey papers that
+enumerate many methods in their abstracts. The LLM classification mitigates these
+issues, but it is in turn limited to records that have an abstract available.
+
+\subsection{Temporal scope}
+
+The API was queried once at a fixed point in time. OpenAlex continuously ingests new
+records, so the corpus will grow stale over time. Re-running the collection step with
+the same search phrases and de-duplicating against the existing records would extend
+the corpus incrementally without discarding prior classifications.
 
 \end{document}

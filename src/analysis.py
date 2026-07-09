@@ -1,10 +1,10 @@
-"""Análisis y visualización de la clasificación LLM del corpus CARP.
+"""Analysis and visualisation of the LLM-classified CARP corpus.
 
-Lee data/carp_articles_llm.json y genera:
-  - data/figures/*.png : gráficos (por año, variantes, enfoques, métodos, OA)
-  - data/crosstab_variante_enfoque.csv : tabla cruzada variante × enfoque
+Reads data/carp_articles_llm.json and produces:
+  - data/figures/*.png  : figures (per year, variants, approaches, methods, OA)
+  - data/crosstab_variante_enfoque.csv : variant x approach cross-tabulation
 
-Uso:
+Usage:
     python src/analysis.py
 """
 
@@ -16,9 +16,11 @@ from pathlib import Path
 
 import matplotlib
 
-matplotlib.use("Agg")  # backend sin ventana
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
+
+from label_translations import tr_approach, tr_meta, tr_variant
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 FIG_DIR = DATA_DIR / "figures"
@@ -50,68 +52,71 @@ def main() -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     df = load()
 
-    # Para análisis temáticos, excluimos los no relevantes.
-    rel = df[df["llm_relevance"] != "No relevante"].copy()
+    # Translate Spanish labels from the LLM classification to English before plotting.
+    df["llm_variant"] = df["llm_variant"].map(tr_variant)
+    df["llm_approach"] = df["llm_approach"].map(tr_approach)
 
-    # 1. Artículos por año (todo el corpus, últimos ~25 años)
+    rel = df[df["llm_approach"] != "Not relevant"].copy()
+
+    # 1. Publications per year (full corpus, 1981–2026)
     years = df["publication_year"].dropna()
     yr = years[(years >= 1981) & (years <= 2026)].astype(int)
     counts = yr.value_counts().sort_index()
     plt.figure(figsize=(11, 4))
     plt.bar(counts.index, counts.values, color="#55A868")
-    plt.title("Publicaciones sobre CARP por año")
-    plt.xlabel("Año")
-    plt.ylabel("N.º de artículos")
+    plt.title("CARP publications per year")
+    plt.xlabel("Year")
+    plt.ylabel("Number of articles")
     plt.tight_layout()
     plt.savefig(FIG_DIR / "articulos_por_anio.png", dpi=130)
     plt.close()
 
-    # 2. Variantes del CARP
-    barh(Counter(rel["llm_variant"]), "Variantes del CARP (clasificación LLM)",
-         "N.º de artículos", FIG_DIR / "variantes.png")
+    # 2. CARP variants
+    barh(Counter(rel["llm_variant"]), "CARP variants (LLM classification)",
+         "Number of articles", FIG_DIR / "variantes.png")
 
-    # 3. Enfoque de solución
-    barh(Counter(rel["llm_approach"]), "Enfoque de solución",
-         "N.º de artículos", FIG_DIR / "enfoques.png")
+    # 3. Solution approach
+    barh(Counter(rel["llm_approach"]), "Solution approach",
+         "Number of articles", FIG_DIR / "enfoques.png")
 
-    # 4. Metaheurísticas concretas
+    # 4. Specific metaheuristics (top 15)
     mc: Counter = Counter()
     for s in rel["llm_metaheuristics"].fillna(""):
         for m in filter(None, s.split("; ")):
-            mc[m] += 1
-    barh(mc, "Metaheurísticas concretas más usadas", "N.º de artículos",
+            mc[tr_meta(m)] += 1
+    barh(mc, "Most used metaheuristics", "Number of articles",
          FIG_DIR / "metaheuristicas.png", top=15)
 
     # 5. Open access
-    oa = df["is_open_access"].map({True: "Open access", False: "Acceso cerrado"}).fillna("Desconocido")
-    barh(Counter(oa), "Acceso abierto vs. cerrado", "N.º de artículos",
+    oa = df["is_open_access"].map({True: "Open access", False: "Closed access"}).fillna("Unknown")
+    barh(Counter(oa), "Open access vs. closed access", "Number of articles",
          FIG_DIR / "open_access.png")
 
-    # 6. Tabla cruzada variante × enfoque
+    # 6. Variant × approach cross-tabulation
     ct = pd.crosstab(rel["llm_variant"], rel["llm_approach"])
     ct["TOTAL"] = ct.sum(axis=1)
     ct = ct.sort_values("TOTAL", ascending=False)
     ct.to_csv(DATA_DIR / "crosstab_variante_enfoque.csv", encoding="utf-8")
 
-    # 7. Evolución de los enfoques por año (apilado, desde 2005)
+    # 7. Evolution of solution approach by year (stacked, 2005+)
     rec = rel.dropna(subset=["publication_year"]).copy()
     rec = rec[rec["publication_year"] >= 2005]
     rec["publication_year"] = rec["publication_year"].astype(int)
     pivot = pd.crosstab(rec["publication_year"], rec["llm_approach"])
     pivot.plot(kind="bar", stacked=True, figsize=(12, 5), colormap="tab10", width=0.85)
-    plt.title("Evolución del enfoque de solución por año (2005+)")
-    plt.xlabel("Año")
-    plt.ylabel("N.º de artículos")
-    plt.legend(title="Enfoque", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
+    plt.title("Evolution of solution approach by year (2005+)")
+    plt.xlabel("Year")
+    plt.ylabel("Number of articles")
+    plt.legend(title="Approach", bbox_to_anchor=(1.01, 1), loc="upper left", fontsize=8)
     plt.tight_layout()
     plt.savefig(FIG_DIR / "enfoques_por_anio.png", dpi=130)
     plt.close()
 
-    print("Análisis generado:")
+    print("Analysis complete:")
     for p in sorted(FIG_DIR.glob("*.png")):
         print(f"  fig  {p.relative_to(DATA_DIR.parent)}")
     print(f"  csv  {(DATA_DIR / 'crosstab_variante_enfoque.csv').relative_to(DATA_DIR.parent)}")
-    print("\nTabla cruzada variante × enfoque (relevantes):")
+    print("\nVariant x approach cross-tabulation (relevant records only):")
     print(ct.to_string())
 
 

@@ -1,17 +1,16 @@
-"""Filtra el corpus ya generado a los trabajos publicados desde 2021 en adelante.
+"""Filter the already-collected corpus to works published from 2021 onward.
 
-No vuelve a consultar OpenAlex ni a re-clasificar: reutiliza los archivos ya
-producidos (`carp_articles*.json`) y crea copias filtradas con el prefijo
-`2021on_`, además de regenerar los gráficos y la tabla cruzada para ese
-subconjunto.
+Does not re-query OpenAlex or re-classify: reuses the previously generated
+files (carp_articles*.json) and writes filtered copies with the prefix
+2021on_, regenerating figures and the cross-tabulation for that subset.
 
-Genera:
-  - data/2021on_carp_articles.{json,csv}       (metadatos + clasificación por reglas)
-  - data/2021on_carp_articles_llm.{json,csv}    (con las columnas llm_*)
+Produces:
+  - data/2021on_carp_articles.{json,csv}       (metadata + rule-based labels)
+  - data/2021on_carp_articles_llm.{json,csv}    (with llm_* columns)
   - data/2021on_figures/*.png
   - data/2021on_crosstab_variante_enfoque.csv
 
-Uso:
+Usage:
     python src/filter_2021on.py
 """
 
@@ -28,11 +27,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import pandas as pd
 
+from label_translations import tr_approach, tr_meta, tr_variant
+
 MIN_YEAR = 2021
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 FIG_DIR = DATA_DIR / "2021on_figures"
 
-# Columnas de cada CSV (mismas que en los scripts originales).
 BASE_CSV_FIELDS = [
     "doi", "title", "publication_year", "venue", "publisher",
     "is_open_access", "oa_status", "variants", "solution_approach",
@@ -73,8 +73,8 @@ def filter_files() -> tuple[list[dict], list[dict]]:
         json.dumps(llm_r, ensure_ascii=False, indent=2), encoding="utf-8")
     _write_csv(llm_r, LLM_CSV_FIELDS, DATA_DIR / "2021on_carp_articles_llm.csv")
 
-    print(f"Corpus completo -> {len(base)} trabajos; desde {MIN_YEAR}: {len(base_r)}")
-    print(f"Con abstract (LLM) -> {len(llm)} trabajos; desde {MIN_YEAR}: {len(llm_r)}")
+    print(f"Full corpus -> {len(base)} works; from {MIN_YEAR}: {len(base_r)}")
+    print(f"With abstract (LLM) -> {len(llm)} works; from {MIN_YEAR}: {len(llm_r)}")
     return base_r, llm_r
 
 
@@ -87,7 +87,7 @@ def barh(counter: Counter, title: str, path: Path, top: int | None = None) -> No
     for i, v in enumerate(values):
         plt.text(v, i, f" {v}", va="center", fontsize=8)
     plt.title(title)
-    plt.xlabel("N.º de artículos")
+    plt.xlabel("Number of articles")
     plt.tight_layout()
     plt.savefig(path, dpi=130)
     plt.close()
@@ -97,49 +97,59 @@ def analyze(base_r: list[dict], llm_r: list[dict]) -> None:
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame(base_r)
     df["publication_year"] = pd.to_numeric(df["publication_year"], errors="coerce")
-    rel = pd.DataFrame(llm_r)
-    rel = rel[rel["llm_relevance"] != "No relevante"].copy()
 
-    # 1. Artículos por año (2021+)
+    rel = pd.DataFrame(llm_r)
+    # Translate Spanish labels to English before any plotting or cross-tabulation.
+    rel["llm_variant"] = rel["llm_variant"].map(tr_variant)
+    rel["llm_approach"] = rel["llm_approach"].map(tr_approach)
+    rel = rel[rel["llm_approach"] != "Not relevant"].copy()
+
+    # 1. Publications per year (2021+)
     yr = df["publication_year"].dropna().astype(int)
     counts = yr[yr >= MIN_YEAR].value_counts().sort_index()
     plt.figure(figsize=(8, 4))
     plt.bar(counts.index.astype(str), counts.values, color="#55A868")
     for x, v in zip(range(len(counts)), counts.values):
         plt.text(x, v, str(v), ha="center", va="bottom", fontsize=9)
-    plt.title(f"Publicaciones sobre CARP por año ({MIN_YEAR}+)")
-    plt.xlabel("Año")
-    plt.ylabel("N.º de artículos")
+    plt.title(f"CARP publications per year ({MIN_YEAR}+)")
+    plt.xlabel("Year")
+    plt.ylabel("Number of articles")
     plt.tight_layout()
     plt.savefig(FIG_DIR / "2021on_articulos_por_anio.png", dpi=130)
     plt.close()
 
-    # 2-5. Distribuciones
-    barh(Counter(rel["llm_variant"]), f"Variantes del CARP ({MIN_YEAR}+)",
+    # 2. CARP variants
+    barh(Counter(rel["llm_variant"]), f"CARP variants ({MIN_YEAR}+)",
          FIG_DIR / "2021on_variantes.png")
-    barh(Counter(rel["llm_approach"]), f"Enfoque de solución ({MIN_YEAR}+)",
+
+    # 3. Solution approach
+    barh(Counter(rel["llm_approach"]), f"Solution approach ({MIN_YEAR}+)",
          FIG_DIR / "2021on_enfoques.png")
+
+    # 4. Specific metaheuristics (top 15)
     mc: Counter = Counter()
     for s in rel["llm_metaheuristics"].fillna(""):
         for m in filter(None, s.split("; ")):
-            mc[m] += 1
-    barh(mc, f"Metaheurísticas más usadas ({MIN_YEAR}+)",
+            mc[tr_meta(m)] += 1
+    barh(mc, f"Most used metaheuristics ({MIN_YEAR}+)",
          FIG_DIR / "2021on_metaheuristicas.png", top=15)
-    oa = df["is_open_access"].map({True: "Open access", False: "Acceso cerrado"}).fillna("Desconocido")
-    barh(Counter(oa), f"Acceso abierto vs. cerrado ({MIN_YEAR}+)",
+
+    # 5. Open access
+    oa = df["is_open_access"].map({True: "Open access", False: "Closed access"}).fillna("Unknown")
+    barh(Counter(oa), f"Open access vs. closed access ({MIN_YEAR}+)",
          FIG_DIR / "2021on_open_access.png")
 
-    # 6. Tabla cruzada variante x enfoque
+    # 6. Variant × approach cross-tabulation
     ct = pd.crosstab(rel["llm_variant"], rel["llm_approach"])
     ct["TOTAL"] = ct.sum(axis=1)
     ct = ct.sort_values("TOTAL", ascending=False)
     ct.to_csv(DATA_DIR / "2021on_crosstab_variante_enfoque.csv", encoding="utf-8")
 
-    print("\nGráficos y tabla cruzada:")
+    print("\nFigures and cross-tabulation:")
     for p in sorted(FIG_DIR.glob("*.png")):
         print(f"  fig  {p.relative_to(DATA_DIR.parent)}")
     print(f"  csv  {(DATA_DIR / '2021on_crosstab_variante_enfoque.csv').relative_to(DATA_DIR.parent)}")
-    print(f"\nTabla cruzada variante x enfoque ({MIN_YEAR}+, relevantes):")
+    print(f"\nVariant x approach cross-tabulation ({MIN_YEAR}+, relevant records only):")
     print(ct.to_string())
 
 
