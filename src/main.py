@@ -1,5 +1,8 @@
+from carp_scraper import run
+
+
 def main() -> None:
-    print("CARP review project ready")
+    run()
 
 
 if __name__ == "__main__":
