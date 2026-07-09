@@ -1,1 +1,4 @@
 requests>=2.31
+anthropic>=0.40      # clasificación LLM (opcional, vía Batch API)
+pandas>=2.0          # análisis
+matplotlib>=3.7      # gráficos

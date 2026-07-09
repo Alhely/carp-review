@@ -38,8 +38,38 @@ python src/enrich.py
 ```
 
 > Es un clasificador por reglas: rápido y reproducible, pero puede sobre-etiquetar
-> abstracts que mencionan muchos términos. Para máxima precisión se puede añadir
-> una pasada con un LLM.
+> abstracts que mencionan muchos términos.
+
+### Clasificación semántica con LLM (Claude)
+
+Para máxima precisión, una clasificación con LLM asigna **una** variante y **un**
+método principal por artículo (sin sobre-etiquetar) y añade un resumen de cómo se
+resolvió. Genera `data/carp_articles_llm.csv` / `.json` con las columnas
+`llm_relevance`, `llm_variant`, `llm_approach`, `llm_metaheuristics`,
+`llm_is_hybrid`, `llm_how_solved`.
+
+Dos formas de obtenerla:
+
+- **Vía Batch API** ([`src/llm_classifier.py`](src/llm_classifier.py)) — automática
+  y barata (Batch API + structured outputs). Requiere `ANTHROPIC_API_KEY`:
+  ```bash
+  export ANTHROPIC_API_KEY=sk-ant-...
+  python src/llm_classifier.py
+  ```
+- **Local** ([`src/llm_local_prep.py`](src/llm_local_prep.py) +
+  [`src/llm_local_merge.py`](src/llm_local_merge.py)) — el prep genera
+  `data/llm_input.jsonl`; las clasificaciones se guardan en
+  `data/llm_results/*.json` y el merge las une al CSV/JSON final.
+
+## Análisis y gráficos
+
+[`src/analysis.py`](src/analysis.py) genera gráficos en `data/figures/` (por año,
+variantes, enfoques, metaheurísticas, open access, evolución de enfoques) y la
+tabla cruzada `data/crosstab_variante_enfoque.csv`:
+
+```bash
+python src/analysis.py
+```
 
 ## Uso
 
