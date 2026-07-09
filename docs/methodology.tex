@@ -1,0 +1,232 @@
+\documentclass[11pt]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{gray!8},
+  columns=fullflexible,
+  keepspaces=true,
+}
+
+\title{Retrieval and Classification of the Literature on the\\
+Capacitated Arc Routing Problem: A Reproducible Pipeline}
+\author{CARP review project}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document describes the process used to build a corpus of scientific
+publications on the Capacitated Arc Routing Problem (CARP), its variants, and its
+solution methodology. Rather than scraping publisher websites directly---which is
+unreliable, rate-limited, and violates most terms of service---the pipeline queries
+the free, open bibliographic aggregator OpenAlex, which already indexes the major
+scientific publishers (Elsevier/ScienceDirect, IEEE~Xplore, Springer, Wiley, Taylor
+\& Francis, among others). For each work only metadata are retrieved (no PDFs are
+downloaded): DOI, title, abstract, publication year, venue, publisher, and
+open-access status. The corpus is then classified twice---first with a transparent
+rule-based tagger and second with a large language model (LLM) that assigns a single
+primary variant and solution method per article---and finally summarized through a
+set of figures and a cross-tabulation.
+\end{abstract}
+
+\section{Overview}
+The pipeline has four stages, each implemented as a small, self-contained Python
+script:
+\begin{enumerate}[nosep]
+  \item \textbf{Collection} --- query OpenAlex and store metadata
+        (\texttt{carp\_scraper.py}).
+  \item \textbf{Rule-based classification} --- keyword taxonomies over
+        title\,+\,abstract (\texttt{classifier.py}, \texttt{enrich.py}).
+  \item \textbf{LLM classification} --- semantic labelling of each abstract
+        (\texttt{llm\_classifier.py} or the local
+        \texttt{llm\_local\_prep.py}\,/\,\texttt{llm\_local\_merge.py}).
+  \item \textbf{Analysis} --- figures and cross-tabulations
+        (\texttt{analysis.py}).
+\end{enumerate}
+All outputs are written to a \texttt{data/} directory in both CSV and JSON.
+
+\section{Data source and rationale}
+The core design decision was to \emph{not} scrape publisher sites. Direct scraping
+of ScienceDirect, IEEE~Xplore, Springer, and similar platforms is brittle (anti-bot
+protections, CAPTCHAs, pay-walls) and legally questionable. Instead we use
+\textbf{OpenAlex}\footnote{\url{https://openalex.org}}, a free and open catalogue of
+over 250 million scholarly works that aggregates records from essentially all major
+publishers. OpenAlex exposes a public REST API that requires no API key; supplying a
+contact e-mail places requests in the faster ``polite pool''.
+
+\section{Search strategy}
+Because CARP variants almost always contain the phrase \emph{arc routing}, a small
+set of anchor phrases yields broad coverage. Each phrase is issued as an exact
+phrase match against the combined title-and-abstract field
+(\texttt{filter=title\_and\_abstract.search:"\ldots"}). The phrase list spans the
+core problem, its variants, and its methodology:
+
+\begin{lstlisting}
+capacitated arc routing problem      periodic capacitated arc routing
+capacitated arc routing              stochastic arc routing
+arc routing problem                  mixed capacitated arc routing
+multi-depot arc routing              multi-objective arc routing
+split delivery arc routing           time-dependent arc routing
+min-max capacitated arc routing      large-scale capacitated arc routing
+windy arc routing                    open capacitated arc routing
+arc routing metaheuristic            arc routing heuristic
+arc routing genetic algorithm        arc routing memetic algorithm
+arc routing ant colony               arc routing tabu search
+arc routing exact algorithm          arc routing branch and cut
+\end{lstlisting}
+
+\noindent
+Results from all phrases are merged and \textbf{de-duplicated by the OpenAlex work
+identifier}. In practice the two broad anchors (\emph{arc routing problem} and
+\emph{capacitated arc routing}) already subsume the narrower variant phrases, which
+therefore contribute few or no additional records.
+
+\subsection{Pagination}
+Full result sets are retrieved with OpenAlex cursor pagination
+(\texttt{per-page=200}, \texttt{cursor=*}, following \texttt{meta.next\_cursor}
+until exhausted), with a short courtesy delay between requests.
+
+\section{Retrieved fields}
+For every unique work the following fields are flattened out of the OpenAlex JSON:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Field} & \textbf{Source in the OpenAlex record} \\
+\midrule
+\texttt{doi}              & \texttt{doi} (normalised, prefix stripped) \\
+\texttt{title}            & \texttt{title} / \texttt{display\_name} \\
+\texttt{abstract}         & reconstructed from \texttt{abstract\_inverted\_index} \\
+\texttt{publication\_year} & \texttt{publication\_year} \\
+\texttt{venue}            & \texttt{primary\_location.source.display\_name} \\
+\texttt{publisher}        & \texttt{primary\_location.source.host\_organization\_name} \\
+\texttt{is\_open\_access}  & \texttt{open\_access.is\_oa} \\
+\texttt{oa\_status}       & \texttt{open\_access.oa\_status} \\
+\texttt{work\_type}, \texttt{cited\_by\_count}, \texttt{openalex\_id} & respective fields \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Abstract reconstruction.}
+OpenAlex distributes abstracts as an \emph{inverted index} (a mapping from each word
+to the list of positions at which it occurs) for licensing reasons. The plain-text
+abstract is rebuilt by collecting all \((\text{position}, \text{word})\) pairs,
+sorting them by position, and concatenating the words.
+
+\section{Collection results}
+The unfiltered query returned \textbf{905 unique works} spanning 1969--2026. Of
+these, 79\% carry a DOI, 60\% include a usable abstract, and 35\% are open access.
+The most frequent venues were \emph{Computers \& Operations Research}, the
+\emph{European Journal of Operational Research}, and \emph{Networks}. Missing
+abstracts and DOIs reflect coverage gaps in the source (e.g.\ some theses and
+conference records), not failures of the retrieval procedure.
+
+\subsection{Restriction to recent literature (2021 onward)}
+The unfiltered query returns works dated as early as 1969, which is spurious given
+that the CARP was formally introduced in 1981; such early dates correspond to
+mis-dated records or arc-routing predecessors in the source data. For the focused
+analysis we therefore restrict the corpus to works published from \textbf{2021
+onward}. Filtering the already-collected data (no re-querying and no
+re-classification) yields \textbf{206 works} (44 in 2021, 55 in 2022, 30 in 2023, 26
+in 2024, 31 in 2025, 20 in 2026), of which \textbf{135 carry a usable abstract} and
+are covered by the LLM classification; 113 of the 206 are open access. This subset,
+its LLM labels, figures, and cross-tabulation are written with a \texttt{2021on\_}
+prefix by \texttt{filter\_2021on.py}, which reuses the previously generated files.
+
+\section{Classification}
+\subsection{Rule-based tagger}
+A transparent, reproducible classifier (\texttt{classifier.py}) applies regular-%
+expression taxonomies to the concatenated title and abstract. It emits, per
+article: the CARP \emph{variant(s)}; a high-level \emph{solution approach} (exact /
+constructive heuristic / metaheuristic / hybrid--matheuristic); the specific
+metaheuristics detected (GA, memetic, ACO, tabu search, VNS, ALNS, \ldots); and a
+Boolean \emph{hybrid} flag. Because it matches every keyword present, it may
+over-label survey-style abstracts that enumerate many methods; it is therefore
+treated as a fast first pass rather than the final label.
+
+\subsection{LLM classification}
+For higher precision, each abstract is classified with a large language model
+(Anthropic Claude). Unlike the rule-based tagger, the LLM assigns \emph{one} primary
+variant and \emph{one} primary solution method per article, and additionally
+produces a relevance judgement and a one-sentence summary of \emph{how} the problem
+was solved. The output schema is:
+
+\begin{center}
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Field} & \textbf{Meaning} \\
+\midrule
+\texttt{llm\_relevance}      & core CARP / CARP variant / related arc routing / not relevant \\
+\texttt{llm\_variant}        & single CARP variant (closed vocabulary) \\
+\texttt{llm\_approach}       & exact / heuristic / metaheuristic / hybrid / ML / survey \\
+\texttt{llm\_metaheuristics} & specific metaheuristics named in the text \\
+\texttt{llm\_is\_hybrid}      & Boolean \\
+\texttt{llm\_how\_solved}     & one-sentence summary of the solution method \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Two interchangeable routes produce the same schema:
+\begin{itemize}[nosep]
+  \item \textbf{Batch API} (\texttt{llm\_classifier.py}): the 552 abstracts are
+        submitted through Anthropic's Batch API with \emph{structured outputs}
+        (a JSON schema) so that every response is guaranteed to be valid and
+        parseable. This route is fully automated and low cost.
+  \item \textbf{Local route} (\texttt{llm\_local\_prep.py} +
+        \texttt{llm\_local\_merge.py}): abstracts are exported to a compact JSONL
+        file, classified in batches, stored under \texttt{data/llm\_results/}, and
+        merged back into the corpus by index.
+\end{itemize}
+
+Only records with a usable abstract (552 of the 905) are sent to the LLM, since the
+model requires text to reason over. The resulting label distribution shows that the
+number of ``unspecified'' methods drops sharply relative to the rule-based pass,
+because the model infers the method even when the exact keyword is absent.
+
+\section{Analysis}
+The final stage (\texttt{analysis.py}) uses \texttt{pandas} and \texttt{matplotlib}
+to produce, from the LLM-classified corpus (excluding not-relevant records): a
+histogram of publications per year; bar charts of variants, solution approaches, and
+specific metaheuristics; an open-access breakdown; a stacked chart of solution
+approach over time; and a variant\,$\times$\,approach cross-tabulation exported as
+CSV.
+
+\section{Reproducibility}
+The entire pipeline is reproducible from a clean checkout:
+
+\begin{lstlisting}[language=bash]
+pip install -r requirements.txt
+
+# 1. Collect metadata from OpenAlex (writes data/carp_articles.{csv,json})
+python src/main.py
+
+# 2. (optional) rule-based classification
+python src/enrich.py
+
+# 3. LLM classification (Batch API route; needs ANTHROPIC_API_KEY)
+export ANTHROPIC_API_KEY=sk-ant-...
+python src/llm_classifier.py
+
+# 4. figures + cross-tabulation (writes data/figures/ and a CSV)
+python src/analysis.py
+\end{lstlisting}
+
+\noindent
+No PDFs are downloaded at any stage; the pipeline operates entirely on metadata and
+abstracts retrieved from the OpenAlex API.
+
+\end{document}

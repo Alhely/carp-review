@@ -71,6 +71,26 @@ tabla cruzada `data/crosstab_variante_enfoque.csv`:
 python src/analysis.py
 ```
 
+### Subconjunto 2021 en adelante
+
+La búsqueda sin filtro devuelve trabajos con fechas desde 1969 (registros mal
+fechados o predecesores del arc routing, ya que el CARP se formalizó en 1981). Para
+el análisis enfocado se restringe el corpus a **2021+** con
+[`src/filter_2021on.py`](src/filter_2021on.py), que **reutiliza** los archivos ya
+generados (sin volver a consultar OpenAlex ni re-clasificar) y escribe copias con el
+prefijo `2021on_`:
+
+```bash
+python src/filter_2021on.py
+```
+
+- `data/2021on_carp_articles.{csv,json}` — 206 trabajos (2021–2026)
+- `data/2021on_carp_articles_llm.{csv,json}` — 135 con abstract (columnas `llm_*`)
+- `data/2021on_figures/*.png` y `data/2021on_crosstab_variante_enfoque.csv`
+
+La metodología completa está documentada en
+[`docs/methodology.tex`](docs/methodology.tex).
+
 ## Uso
 
 ```bash
